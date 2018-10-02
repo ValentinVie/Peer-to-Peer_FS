@@ -7,25 +7,34 @@ Created on Mon Oct  1 18:19:08 2018
 """
 
 import socket
+import time
+import sys
 
+TARGET_IP = '127.0.0.1' # Target IP
+TARGET_PORT = 5005 # Target Port
+BUFFER_SIZE = 1024 # The receive buffer
 
-TCP_IP = '127.0.0.1'
-TCP_PORT = 5005
-BUFFER_SIZE = 1024
-MESSAGE = "Hello, World!Hello, World!Hello, World!Hello, World!Hello, World!Hello, World!Hello, World!Hello, World!Hello, World!Hello, World!"
 
 # Create a TCP/IP socket
-s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
 # Connect the socket to the port where the server is listening
-s.connect((TCP_IP, TCP_PORT))
+try:
+    client.connect((TARGET_IP, TARGET_PORT))
+    print("[C] Client connected to the server : %s:%d."% (TARGET_IP, TARGET_PORT))
+except ConnectionRefusedError:
+    print("[C] Server refused the connexion.")
+    print("[C] Aborting.")
+    client.close()
+    sys.exit()
+#wait for instruction
 
 # Send data
-s.send(MESSAGE.encode())
+client.send("Request client...".encode())
 
 # Look for the response
-data = s.recv(BUFFER_SIZE)
+data = client.recv(BUFFER_SIZE)
+print("[C] Received data: %s."% data.decode())
 
-s.close()
+client.close()
 
-print("received data:", data)

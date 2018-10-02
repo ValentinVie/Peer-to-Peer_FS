@@ -9,50 +9,67 @@ Created on Mon Oct  1 18:16:23 2018
 import socket
 from threading import Thread
  
-TCP_IP = '127.0.0.1'
-TCP_PORT = 5005
-BUFFER_SIZE = 20  # Normally 1024, but we want fast response
+TCP_IP = '127.0.0.1' # Listening IP
+TCP_PORT = 5005 # Listening Port
+BUFFER_SIZE = 1024  # The receive buffer, contains the first message from the client.
 
 
 
-conn, addr = s.accept()
-print('Connection address:', addr)
-
-while 1:
-    data = conn.recv(BUFFER_SIZE)
-    if not data: 
-        break
-    print("received data:", data.decode())
-    conn.send(data+'response'.encode())
-    
-conn.close()
 
 class MainServer:
-    def __init__(self, IP, TCPPort, bufferSize):
+    def __init__(self, IP = TCP_IP, TCPPort = TCP_PORT, bufferSize = BUFFER_SIZE):
         self.IP = IP
         self.TCPPort = TCPPort
         self.bufferSize = bufferSize #Receive buffer size.
+        self.threads = [] #list of handleClient threads.
         
         # Create a TCP/IP socket
-        self.s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.serverSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        #re-use the socket if in a TIME_WAIT state.
+        #https://stackoverflow.com/questions/27360218/how-to-close-socket-connection-on-ctrl-c-in-a-python-programme
+        self.serverSocket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        
         # Bind the socket to the port
-        self.s.bind((TCP_IP, TCP_PORT))
+        try:
+            self.serverSocket.bind((TCP_IP, TCP_PORT))
+        except:
+            print("[S] Binding socket failed.")
+        
         # Listen for incoming connections
-        self.s.listen(1)# queue up to 1 requests
-        print("Server socket now listening")
+        self.serverSocket.listen(5)# queue up to 5 requests
+        print("[S] Server created, not listening yet.")
         
-        
-        while True:
-            self.connection, self.address = self.s.accept()
-            self.ip, self.port = self.address[0], self.address[1]
-            
-            try:
-                Thread(target=client_thread, args=(connection, ip, port)).start()
-            except:
-                print("Thread did not start.")
+    def startServer(self):
+        print("[S] Server socket now listening.")
+        try:
+            while True:
+                clientSocket, addr = self.serverSocket.accept()
+                print("[S] Accepted connection from: %s:%d."%(addr[0], addr[1]))
+
+                try:
+                    clientHandler = Thread(target=self.handleClient, args=(clientSocket,))
+                    clientHandler.start()
+                except:
+                    print("[S] Thread did not start.")
+        except KeyboardInterrupt:
+            for t in self.threads:
+                t.join(3) # Wait 3s for the thread to finish.
+                t.exit() # Exit the thread.
+            self.serverSocket.close()
+            print("\n[S] Server stopped.")
         
 
-def client_thread(connection, ip, port, max_buffer_size = 5120)
+    def handleClient(self, clientSocket):
+        #Print out what the client sends
+        request = clientSocket.recv(self.bufferSize)
+        print("[S] Received from the client %s."%request.decode())
+        
+        #Sends back a packet
+        clientSocket.send("ACK".encode())
+        clientSocket.close()
+        
+            
 
 if __name__ == "__main__":
-    print("Starting the main server...")
+    S = MainServer()
+    S.startServer()
