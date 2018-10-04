@@ -14,6 +14,8 @@ import pickle
 TCP_IP = '127.0.0.1' # Listening IP
 TCP_PORT = 5005 # Listening Port
 BUFFER_SIZE = 1024  # The receive buffer, contains the first message from the client.
+MAX_NB_CLIENT = 5
+
 
 
 class MainServer:
@@ -21,13 +23,14 @@ class MainServer:
         self.IP = IP
         self.TCPPort = TCPPort
         self.bufferSize = bufferSize #Receive buffer size.
-        self.threads = [] #list of handleClient threads.
-        self.filesAvailable = { 'filename1HASH': {'client1' : ['piece 1', 'peice 2'], 
-                                                  'client2': ['piece 3']
-                                                 },
-                                'HASH file 2':{ 'client2' : ['piece1', 'piece2', 'piece3']
-                                              }
-                              }
+        self.threads = {} #dict of all threads running
+        self.filesAvailable = {}
+        #self.filesAvailable = { ('filename1', hash(filename1), filesize, chunkNb): {(IP, PORT) : set([1, 2, 3]) chuncks availables, 
+        #                                          ('127.0.0.1', 1253): set([3])
+        #                                         },
+        #                        ('filename2', hash('filename2'), 231, 7):{ ('127.0.0.1', 4353) : set([1, 2, 3, 4, 5, 6, 7])
+        #                                      }
+        #                      }
         
         # Create a TCP/IP socket
         self.serverSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -44,7 +47,7 @@ class MainServer:
             sys.exit()
         
         # Listen for incoming connections
-        self.serverSocket.listen(5)# queue up to 5 requests
+        self.serverSocket.listen(MAX_NB_CLIENT)# Queue up to MAX_NB_CLIENT requests
         print("[S] Server created, not listening yet.")
         
     def startServer(self):
@@ -57,46 +60,92 @@ class MainServer:
                 try:
                     clientHandler = Thread(target=self.handleClient, args=(clientSocket, addr))
                     clientHandler.start()
+                    self.threads[addr] = clientHandler
                 except:
                     print("[S] Thread handleClient() did not start.")
 
         except KeyboardInterrupt:
-            for t in self.threads:
-                t.join(3) # Wait 3s for the thread to finish.
-                t.exit() # Exit the thread.
+            for t in self.threads.values():
+                t.join(1) #let the thread 1sec to finish
+
             self.serverSocket.close()
             print("\n[S] Server stopped on user interrupt.")
         
 
     def handleClient(self, clientSocket, addr):
-        #Print out what the client sends
-        request = clientSocket.recv(self.bufferSize).decode()
-        print("[S] Received request from the client %s:%d : \"%s\"."%(addr[0], addr[1], request))
-        
-        #Request handler
-        if request == "GET_FILE_LIST":
-            self.sendFileList(clientSocket)
-        else:
-            print("[S] Unknown request, dropping.")
-        
-        #Sends back a packet
-        clientSocket.send("ACK".encode())
-        clientSocket.close()
-        print("[S] Completed request from the client %s:%d : \"%s\"."%(addr[0], addr[1], request))
-    
-    def sendFileList(self, clientSocket): #sends the list of files availlables with the sources.
-        try:
-            # Sends the self.filesAvailable
-            data = pickle.dumps(self.filesAvailable)
-            clientSocket.send(data)
+        request = None
+        while request != 'LEAVE':
+            #Print out what the client sends
+            request = clientSocket.recv(self.bufferSize).decode()
+            print("[S] Received request from the client %s:%d : \"%s\"."%(addr[0], addr[1], request))
 
-            # Check the ACK
-            ack = clientSocket.recv(self.bufferSize).decode() #just for an ack...
-            assert(ack == "ACK")
-        except:
-            print("[S] sendFileList failed with socket ", clientSocket)
+            #Request handler
+            if request == "GET_FILE_LIST":
+                self.handleFileListRequest(clientSocket, addr)
+            elif request == "FILE_REGISTER":
+                self.handleFileRegisterRequest(clientSocket, addr)
+            elif request == 'LEAVE':
+                self.handleLeaveRequest(clientSocket, addr)
+                break
+            elif len(request) == 0:
+                break
+            else:
+                print("[S] Unknown request, dropping.", request)
         
+        #Close the client handler.
+        clientSocket.close()
+        del self.threads[addr]
+        print("[S] Client disconnected %s:%d."%(addr[0], addr[1]))
         
+    
+    def handleFileListRequest(self, clientSocket, addr): #sends the list of files availlables with the sources.
+        # Sends the self.filesAvailable
+        data = pickle.dumps(list(self.filesAvailable.keys()))
+        for n in range(len(data) // self.bufferSize + 1):
+            clientSocket.send(data[n * self.bufferSize: (n + 1) * self.bufferSize])
+        clientSocket.send("END_DATA".encode())
+
+        # Check the ACK
+        ack = clientSocket.recv(self.bufferSize).decode() #just for an ack...
+        assert(ack == "ACK")
+        print("[S] Completed request GET_FILE_LIST from the client %s:%d."%(addr[0], addr[1]))
+    
+    def handleLeaveRequest(self, clientSocket, addr):# The client wishes to disconnect from the P2P network.
+        
+        #remove the client from the file system...
+        
+        #Signal to the client he can leave now.
+        clientSocket.send("ACK".encode())
+        print("[S] Completed request LEAVE from the client %s:%d."%(addr[0], addr[1]))
+    
+    def handleFileRegisterRequest(self, clientSocket, addr):
+        #Tells the client to send the file register data.
+        clientSocket.send("SEND".encode())
+        
+        #Wait for the client to send the file it wants to register
+        data = []
+        while True:
+            packet = clientSocket.recv(self.bufferSize)
+            if packet == "END_DATA".encode():
+                break
+            data.append(packet)
+        registrationObject = pickle.loads(b"".join(data))
+        
+        #Process the data
+        self.filesAvailable
+        endPointIP = registrationObject['endPointIP']
+        endPointPort = registrationObject['endPointPort']
+        assert(registrationObject['nbOfFiles'] == len(registrationObject['filesMetadata'])) #check we get all the infos about every objects
+        for meta in registrationObject['filesMetadata']:
+            if self.filesAvailable.get(meta, None) == None: #the entry doesn't exist already
+                self.filesAvailable[meta] = { (endPointIP, endPointPort): set([k for k in range(meta[3])])} #create a set with all the chunck numbers
+            else:
+                self.filesAvailable[meta][(endPointIP, endPointPort)] = set([k for k in range(meta[3])])
+                
+        
+        #Send and ACK
+        clientSocket.send("ACK".encode())
+        print("[S] Completed request FILE_REGISTER from the client %s:%d."%(addr[0], addr[1]))
             
 
 if __name__ == "__main__":
