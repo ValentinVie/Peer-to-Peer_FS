@@ -10,11 +10,14 @@ import socket
 from threading import Thread
 import sys
 import pickle
+import time
  
 TCP_IP = '127.0.0.1' # Listening IP
 TCP_PORT = 5005 # Listening Port
 BUFFER_SIZE = 1024  # The receive buffer, contains the first message from the client.
 MAX_NB_CLIENT = 5
+SEND_DELAY = 0.1
+
 
 
 
@@ -84,8 +87,10 @@ class MainServer:
                 self.handleFileListRequest(clientSocket, addr)
             elif request == "FILE_REGISTER":
                 self.handleFileRegisterRequest(clientSocket, addr)
+            elif request == "FILE_LOCATION":
+                self.handleFileLocationRequest(clientSocket, addr)
             elif request == 'LEAVE':
-                self.handleLeaveRequest(clientSocket, addr)
+                self.handleLeaveRequest(clientSocket, addr) #self.removeClientFromFilesAvailable(addr) included in it.
                 break
             elif len(request) == 0:
                 break
@@ -103,6 +108,7 @@ class MainServer:
         data = pickle.dumps(list(self.filesAvailable.keys()))
         for n in range(len(data) // self.bufferSize + 1):
             clientSocket.send(data[n * self.bufferSize: (n + 1) * self.bufferSize])
+            time.sleep(SEND_DELAY)
         clientSocket.send("END_DATA".encode())
 
         # Check the ACK
@@ -111,12 +117,25 @@ class MainServer:
         print("[S] Completed request GET_FILE_LIST from the client %s:%d."%(addr[0], addr[1]))
     
     def handleLeaveRequest(self, clientSocket, addr):# The client wishes to disconnect from the P2P network.
+        #Receive the server side info about the client
+        serverSideAddr = pickle.loads(clientSocket.recv(self.bufferSize))
         
         #remove the client from the file system...
+        self.removeClientFromFilesAvailable(serverSideAddr)
         
         #Signal to the client he can leave now.
         clientSocket.send("ACK".encode())
         print("[S] Completed request LEAVE from the client %s:%d."%(addr[0], addr[1]))
+    
+    def removeClientFromFilesAvailable(self, addr):
+        for fileID, sources in self.filesAvailable.copy().items():
+            if self.filesAvailable[fileID].get(addr, None) == None:
+                continue
+            else:
+                if len(self.filesAvailable[fileID]) == 1:
+                    del self.filesAvailable[fileID] #There was only 1 source.
+                else:
+                    del self.filesAvailable[fileID][addr] #We remove only the source that left
     
     def handleFileRegisterRequest(self, clientSocket, addr):
         #Tells the client to send the file register data.
@@ -131,6 +150,11 @@ class MainServer:
             data.append(packet)
         registrationObject = pickle.loads(b"".join(data))
         
+        #Send and ACK
+        time.sleep(SEND_DELAY)
+        clientSocket.send("ACK".encode())
+        
+        
         #Process the data
         self.filesAvailable
         endPointIP = registrationObject['endPointIP']
@@ -138,15 +162,31 @@ class MainServer:
         assert(registrationObject['nbOfFiles'] == len(registrationObject['filesMetadata'])) #check we get all the infos about every objects
         for meta in registrationObject['filesMetadata']:
             if self.filesAvailable.get(meta, None) == None: #the entry doesn't exist already
-                self.filesAvailable[meta] = { (endPointIP, endPointPort): set([k for k in range(meta[3])])} #create a set with all the chunck numbers
+                self.filesAvailable[meta] = { (endPointIP, endPointPort): set([k for k in range(meta[3])])} #create a list with all the chunck numbers
             else:
                 self.filesAvailable[meta][(endPointIP, endPointPort)] = set([k for k in range(meta[3])])
                 
         
-        #Send and ACK
-        clientSocket.send("ACK".encode())
         print("[S] Completed request FILE_REGISTER from the client %s:%d."%(addr[0], addr[1]))
-            
+    
+    def handleFileLocationRequest(self, clientSocket, addr):
+        #Receive fileID
+        data = clientSocket.recv(self.bufferSize)
+        fileID = pickle.loads(data)
+
+        
+        #Return the sources for the fileID
+        data = pickle.dumps(self.filesAvailable[fileID])
+        for n in range(len(data) // self.bufferSize + 1):
+            clientSocket.send(data[n * self.bufferSize: (n + 1) * self.bufferSize])
+            time.sleep(SEND_DELAY)
+        clientSocket.send("END_DATA".encode())
+
+        
+        # Check the ACK
+        ack = clientSocket.recv(self.bufferSize).decode() #just for an ack...
+        assert(ack == "ACK")
+        print("[S] Completed request FILE_LOCATION from the client %s:%d."%(addr[0], addr[1]))
 
 if __name__ == "__main__":
     S = MainServer()
