@@ -89,6 +89,8 @@ class MainServer:
                 self.handleFileRegisterRequest(clientSocket, addr)
             elif request == "FILE_LOCATION":
                 self.handleFileLocationRequest(clientSocket, addr)
+            elif request == "CHUNK_REGISTER":
+                self.handleChunkRegisterRequest(clientSocket, addr)
             elif request == 'LEAVE':
                 self.handleLeaveRequest(clientSocket, addr) #self.removeClientFromFilesAvailable(addr) included in it.
                 break
@@ -187,6 +189,28 @@ class MainServer:
         ack = clientSocket.recv(self.bufferSize).decode() #just for an ack...
         assert(ack == "ACK")
         print("[S] Completed request FILE_LOCATION from the client %s:%d."%(addr[0], addr[1]))
+        
+    def handleChunkRegisterRequest(self, clientSocket, addr):
+        #Sends an ACK
+        clientSocket.send("ACK".encode())
+        
+        #Receive the chunkID, the fileID and the endPointIP and endPointPort
+        data = pickle.loads(clientSocket.recv(self.bufferSize))
+        chunkID, fileID, endPointIP, endPointPort = data[0], data[1], data[2], data[3]
+        
+        #Send an ACK
+        clientSocket.send("ACK".encode())
+        
+        #Add the chunk to the list of sources.
+        if self.filesAvailable.get(fileID, None) == None:
+            self.filesAvailable[fileID] = {(endPointIP, endPointPort): set([chunkID])}
+        else:
+            if self.filesAvailable[fileID].get((endPointIP, endPointPort), None) == None:
+                self.filesAvailable[fileID][(endPointIP, endPointPort)] = set([chunkID])
+            else:
+                self.filesAvailable[fileID][(endPointIP, endPointPort)].add(chunkID)
+            
+        
 
 if __name__ == "__main__":
     S = MainServer()

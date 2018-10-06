@@ -28,12 +28,14 @@ BUFFER_SIZE = 1024 # The receive buffer
 MAX_NB_PEERS = 5
 SEND_DELAY = 0.01
 TMP_DIRECTORY = 'tmp' #The name of the temporary directory.
-MAX_QUEUED_REQUEST = 50
+MAX_QUEUED_REQUEST = 50 #Max number of threads downloading from peers
+UPDATE_FILE_LOCATION_FREQUENCY = 5 #Every 5s
 
 
 def progressBar(progress, total):
     #Displays or updates a console progress bar.
     #Source: https://stackoverflow.com/questions/3160699/python-progress-bar
+    sys.stdout.flush()
     barLength, status = 20, ""
     progress = float(progress) / float(total)
     if progress >= 1.:
@@ -49,15 +51,18 @@ class Client:
     def __init__(self, shareFolder, targetIP = TARGET_IP, targetPort = TARGET_PORT, bufferSize = BUFFER_SIZE, endPointIP = ENDPOINT_IP, endPointPort = ENDPOINT_PORT):
         
         #------------------ CLIENT TO MAIN-SERVER SIDE
-        self.filesAvailable = [] #list of files available [('filename1', hash(...), fileSize, nbChunks), ('filename2', hash(...), fileSize, nbChunks)...]
+        self.filesAvailable = [] #List of files available [('filename1', hash(...), fileSize, nbChunks), ('filename2', hash(...), fileSize, nbChunks)...]
         self.targetIP = TARGET_IP #Main server
         self.targetPort = TARGET_PORT #Main server
         self.shareFolder = shareFolder # The name of the folder the client will share the file from.
+        self.clientSocket = None # Socket to communicate with the main server
+        self.clientSocketLock = Lock() # Lock for the socket to communicate with the main server
         
         #------------------------ SERVER TO PEER SIDE
         self.endPointIP = endPointIP #End-point IP
         self.endPointPort = endPointPort #End-point port
         self.threads = {} #Dict of all server threads running
+        self.serverSocket = None # Socket to communicate with the peers
         
         #-------------------------- PEER TO SERVER SIDE
         self.downloadingFileSource = None #Which peer has what ?
@@ -67,13 +72,14 @@ class Client:
         self.chunksDownloading = set([]) #The chunks downloading
         self.chunksDownloaded_ingLock = Lock() #Lock on the last 2 objects
         
-        self.chunksSaveLock = Lock()
+        self.chunksSaveLock = Lock() #Lock to write the chunk on the disk
         
         self.downloadingThreads = {} #The threads for the downloading process
         self.peerConnected = {} #Dict of peers' (IP, Port) where the client is connected to. {(IP, Port): socket, (IP2, Port2): socket2}
         
         #-------------------------- GENERAL
         self.bufferSize = BUFFER_SIZE
+        self.saveFileLock = Lock()
         
         self.startServerSideThread = Thread(target=self.startServerSide, args=())
         self.startClientSideThread = Thread(target=self.startClientSide, args=())
@@ -139,6 +145,7 @@ class Client:
         self.stopServerSide() #closing the serverSide too.
         
     def fileListRequest(self):
+        self.clientSocketLock.acquire()
         # Sends request
         self.clientSocket.send("GET_FILE_LIST".encode())
         
@@ -154,6 +161,7 @@ class Client:
         # Sends the ACK
         time.sleep(SEND_DELAY)
         self.clientSocket.send("ACK".encode())
+        self.clientSocketLock.release()
     
     def printFileList(self):
         count = 0
@@ -163,6 +171,7 @@ class Client:
             count += 1
     
     def leaveRequest(self):
+        self.clientSocketLock.acquire()
         # Sends request
         self.clientSocket.send("LEAVE".encode())
         
@@ -173,6 +182,7 @@ class Client:
         # Look for the response
         ack = self.clientSocket.recv(self.bufferSize).decode()
         assert(ack == "ACK")
+        self.clientSocketLock.release()
     
     def fileRegisterRequest(self):
         #Tells the server what files the peer wants to share with the network. 
@@ -203,7 +213,7 @@ class Client:
                     sha224.update(data)
             registrationObject['filesMetadata'].append((filename, sha224.hexdigest(), size, chunkNb))
                         
-        
+        self.clientSocketLock.acquire()
         # Sends request
         self.clientSocket.send("FILE_REGISTER".encode())
         
@@ -222,7 +232,7 @@ class Client:
         # Look for the response
         ack = self.clientSocket.recv(self.bufferSize).decode()
         assert(ack == "ACK")
-        
+        self.clientSocketLock.release()
         print("[C2MS] Sent register request.")
         
     def fileLocationRequest(self, fileID):
@@ -250,6 +260,7 @@ class Client:
             fileAlreadyDownloaded = False
                 
         if not fileAlreadyDownloaded: #We send the request
+            self.clientSocketLock.acquire()
             #fileID = ('filename', hash(...), fileSize, nbChunks)
             self.clientSocket.send("FILE_LOCATION".encode())
 
@@ -274,11 +285,32 @@ class Client:
             #Sends an ACK
             time.sleep(SEND_DELAY)
             self.clientSocket.send("ACK".encode())
+            self.clientSocketLock.release()
+            print("[C2MS] File location infos have been updated.")
             return 0
         
         else:
             print("[C2MS] You already have this file.")
             return -1
+        
+    def chunkRegisterRequest(self, chunkID):
+        self.clientSocketLock.acquire()
+        #Send the code to the main server
+        self.clientSocket.send("CHUNK_REGISTER".encode())
+        
+        #Receive an ACK
+        ack = self.clientSocket.recv(self.bufferSize).decode()
+        assert(ack == "ACK")
+        
+        #Send the chunkID, the fileID and the endPointIP and endPointPort
+        time.sleep(SEND_DELAY)
+        self.clientSocket.send(pickle.dumps((chunkID, self.downloadingFileID, self.endPointIP, self.endPointPort)))
+        
+        #Wait for the ACK
+        ack = self.clientSocket.recv(self.bufferSize).decode()
+        assert(ack == "ACK")
+        
+        self.clientSocketLock.release()
                 
     #------------------------ SERVER TO PEER SIDE [S2P] -------------------------
     #----------------------------------------------------------------------------
@@ -332,12 +364,16 @@ class Client:
         request = None
         while request != 'LEAVE':
             #Print out what the client sends
-            request = peerSocket.recv(self.bufferSize).decode()
+            request = peerSocket.recv(self.bufferSize)
+            try:
+                request = request.decode()
+            except:
+                print("[!!!!!!] BAD REQUEST", request)
             print("[S2P] Received request from the peer %s:%d : \"%s\"."%(addr[0], addr[1], request))
 
             #Request handler
             if request == "GET_CHUNK":
-                self.handleGetChunk(peerSocket, addr)
+                self.handleChunkRequest(peerSocket, addr)
             elif request == 'LEAVE':
                 self.handleLeaveRequest(clientSocket, addr)
                 break
@@ -351,36 +387,45 @@ class Client:
         del self.threads[addr]
         print("[S2P] Client disconnected %s:%d."%(addr[0], addr[1]))
     
-    def handleGetChunk(self, peerSocket, addr):
+    def handleChunkRequest(self, peerSocket, addr):
         #Ask which chunk the peer wants and send it + the hash
         
-        #Receive the file ID:
-        fileID = pickle.loads(peerSocket.recv(self.bufferSize))
+        #Send an ACK signaling the peer is up
+        peerSocket.send("ACK".encode())
         
-        #Receive the chunk ID:
-        chunkID = pickle.loads(peerSocket.recv(self.bufferSize))
+        #Receive the file ID and chunkID:
+        fileID, chunkID = pickle.loads(peerSocket.recv(self.bufferSize))
         
         #Find the chunk of data requested:
         chunkData = ''
-        try:
+        try: 
+            self.saveFileLock.acquire()
             pathToF = self.shareFolder+'/'+fileID[0]
-            chunkNb = 0
-            with open(pathToF, 'rb') as f:
-                while True:
+            if exists(pathToF): #The file has already been reconstructed
+                chunkNb = 0
+                with open(pathToF, 'rb') as f:
+                    while True:
+                        chunkData = f.read(self.bufferSize) #Read self.bufferSize bytes by self.bufferSize bytes
+                        if not chunkData or chunkNb == chunkID:
+                            break
+                        chunkNb += 1
+            else:
+                pathToF = self.shareFolder+'/'+TMP_DIRECTORY+'/'+str(chunkID)+'.chunk'
+                with open(pathToF, 'rb') as f:
                     chunkData = f.read(self.bufferSize) #Read self.bufferSize bytes by self.bufferSize bytes
-                    if not chunkData or chunkNb == chunkID:
-                        break
-                    chunkNb += 1
+            self.saveFileLock.release()
         except:
-            print("[S2P] Counldn't find the chunk requested.")
+            print("[S2P] Counldn't find the chunk requested.")        
         
-        #Send the chunk requested
+        #Send the chunk requested and the hash
+        data = pickle.dumps((chunkData, hashlib.sha224(chunkData).hexdigest()))
+            
         time.sleep(SEND_DELAY)
-        peerSocket.send(chunkData)
-        
-        #Send the hash
-        time.sleep(SEND_DELAY)
-        peerSocket.send(hashlib.sha224(chunkData).hexdigest().encode())
+        for n in range(len(data) // self.bufferSize + 1):
+            peerSocket.send(data[n * self.bufferSize: (n + 1) * self.bufferSize])
+            time.sleep(SEND_DELAY)
+        peerSocket.send("END_DATA".encode())
+
         
         print("[S2P] Completed request GET_CHUNK from the client %s:%d."%(addr[0], addr[1]))
             
@@ -395,9 +440,15 @@ class Client:
     #----------------------------------------------------------------------------
     
     def startDownload(self):
-        
+        #downloadingFileID = ('filename', globalhash of file, size in bytes, chunkNb)
         testWhile = len(self.chunksDownloaded) != self.downloadingFileID[3]
-        while testWhile:#downloadingFileID = ('filename', globalhash of file, size in bytes, chunkNb)
+        while testWhile:
+            
+            #Update fileLocationRequest if it's been too long since last time we asked the server
+            #This allow the client to discover new peers
+            if time.time() - self.downloadingFileSourceUpdateTime >= UPDATE_FILE_LOCATION_FREQUENCY:
+                self.fileLocationRequest(self.downloadingFileID)
+            
             # Uses self.downloadingFileSource to check which chunk is the rarest.
             rarestChunkObject = self.findRarestChunk()
             if rarestChunkObject == -1:
@@ -438,10 +489,7 @@ class Client:
                 peerSocket, peerLock = peerSocketLock[0], peerSocketLock[1]
             
             #Block if too many threads are active at the same time...
-            self.maxNumberRequestHandler()
-            
-            #Update fileLocationRequest if it's been too long since last time we asked the server
-            #This allow the client to discover new peers
+            self.maxNumberRequestHandler()      
             
             try:
                 chunkRequestThread = Thread(target=self.chunkRequest, args=(chunkID, peerSocket, peerLock))
@@ -485,9 +533,21 @@ class Client:
         self.chunksDownloaded_ingLock.release()
         
         try:
-            chunkID = Counter(pendingChunks).most_common()[-1][0]
+            
+            chunkFrequency = Counter(pendingChunks).most_common() # Counter('abracadabra').most_common(3) => [('a', 5), ('r', 2), ('b', 2)]
+            leastOccurence = chunkFrequency[-1][1] #Will break if the list is empty -> return -1
+            chunkWithLeastOccurence = []
+            for k in range(len(chunkFrequency)-1, -1, -1):
+                if chunkFrequency[k][1] == leastOccurence:
+                    chunkWithLeastOccurence.append(chunkFrequency[k][0])
+                else:
+                    break
 
-            for peer, s in self.downloadingFileSource.items():
+            chunkID = random.choice(chunkWithLeastOccurence) #Any chunk with the least occurence.
+
+            peer, s = random.choice(list(self.downloadingFileSource.items())) #Random pair (key, value) in self.downloadingFileSource
+            while True:
+                peer, s = random.choice(list(self.downloadingFileSource.items()))
                 if chunkID in s:
                     return (chunkID, peer[0], peer[1])
         except:
@@ -521,19 +581,22 @@ class Client:
         peerLock.acquire()
         peerSocket.send("GET_CHUNK".encode())
         
+        #Wait for an ACK
+        ack = peerSocket.recv(self.bufferSize).decode()
+        assert(ack == "ACK")
+        
         #Send the file ID
         time.sleep(SEND_DELAY)
-        peerSocket.send(pickle.dumps(self.downloadingFileID))
+        peerSocket.send(pickle.dumps((self.downloadingFileID, chunkID)))
         
-        #Send the chunk ID
-        time.sleep(SEND_DELAY)
-        peerSocket.send(pickle.dumps(chunkID))
-        
-        #Receive the chunk
-        data = peerSocket.recv(self.bufferSize)
-        
-        #Receive the hash(chunk)
-        hashReceived = peerSocket.recv(self.bufferSize).decode()
+        #Receive the chunk and the hash
+        rawData = []
+        while True:
+            packet = peerSocket.recv(self.bufferSize)
+            if packet == "END_DATA".encode():
+                break
+            rawData.append(packet)
+        data, hashReceived = pickle.loads(b"".join(rawData))
         
         peerLock.release()
         #Unlock the peerSocket
@@ -550,6 +613,10 @@ class Client:
             f.write(data)
             f.close()
             self.chunksSaveLock.release()
+            
+            #Tell the main server the chunk was received
+            self.chunkRegisterRequest(chunkID)
+            #Unlock the clientSocket
 
             self.chunksDownloaded_ingLock.acquire()
             self.chunksDownloaded.add(chunkID)
@@ -563,6 +630,7 @@ class Client:
             print("[P2S] Chunk request failed, invalid hash.", chunkID)
     
     def saveFile(self):
+        self.saveFileLock.acquire()
         #Assemble the file
         with open(self.shareFolder+'/'+self.downloadingFileID[0], 'wb') as tempFile:
             for i in range(self.downloadingFileID[3]):
@@ -571,6 +639,7 @@ class Client:
         
         #Remove the TMP_DIRECTORY directory
         shutil.rmtree(self.shareFolder+'/'+TMP_DIRECTORY)
+        self.saveFileLock.release()
         print("[P2S] File downloaded.")
         
         
