@@ -3,7 +3,8 @@
 """
 Created on Mon Oct  1 18:16:23 2018
 
-@author: vav4
+@author: vav4, Valentin VIE
+PennState University, CSE 514
 """
 
 import socket
@@ -11,7 +12,8 @@ from threading import Thread
 import sys
 import pickle
 import time
- 
+
+#--------------------------- PROTOCOL OPTIONS
 TCP_IP = '127.0.0.1' # Listening IP
 TCP_PORT = 5005 # Listening Port
 BUFFER_SIZE = 1024  # The receive buffer, contains the first message from the client.
@@ -109,7 +111,6 @@ class MainServer:
         data = pickle.dumps(list(self.filesAvailable.keys()))
         for n in range(len(data) // self.bufferSize + 1):
             clientSocket.send(data[n * self.bufferSize: (n + 1) * self.bufferSize])
-            
         clientSocket.send("END_DATA".encode())
 
         # Check the ACK
@@ -189,18 +190,11 @@ class MainServer:
             clientSocket.send(data[n * self.bufferSize: (n + 1) * self.bufferSize])
         clientSocket.send("END_DATA".encode())
 
-        
-        # Check the ACK
-        ack = clientSocket.recv(self.bufferSize).decode() #just for an ack...
-        if ack != "ACK":
-            print("[S] ACK invalid.", ack)
-            
-        assert(ack == "ACK")
         print("[S] Completed request FILE_LOCATION from the client %s:%d."%(addr[0], addr[1]))
         
     def handleChunkRegisterRequest(self, clientSocket, addr):
-        #Sends an ACK
-        clientSocket.send("ACK".encode())
+        #Tells the client to send
+        clientSocket.send("SEND".encode())
         
         #Receive the chunkID, the fileID and the endPointIP and endPointPort
         rawData = []

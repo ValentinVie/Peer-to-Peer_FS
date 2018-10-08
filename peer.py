@@ -3,7 +3,8 @@
 """
 Created on Mon Oct  1 18:19:08 2018
 
-@author: vav4
+@author: vav4, Valentin VIE
+PennState University, CSE 514
 """
 
 import socket
@@ -20,6 +21,8 @@ import random
 from collections import Counter
 random.seed()
 
+
+#--------------------------- DISPLAY OPTIONS
 VERBOSE_C2MS = 1 #Display the messages between Client and the main server
 VERBOSE_S2P = 1 #Display messages between the server side of the client and another peer
 VERY_VERBOSE_S2P = 0 #Display each messages between the server side of the client and another peer CHUNK_REQUEST...
@@ -30,26 +33,31 @@ VERBOSE_P2S = VERBOSE_P2S or VERY_VERBOSE_P2S
 VERBOSE_S2P = VERBOSE_S2P or VERY_VERBOSE_S2P
 
 
+#--------------------------- PROTOCOL OPTIONS
 TARGET_IP = '127.0.0.1' # Target IP of the main server
 TARGET_PORT = 5005 # Target Port of the main server
 ENDPOINT_PORT = random.randint(49152, 65535) #The Internet Assigned Numbers Authority (IANA) suggests the range 49152 to 65535 (215+214 to 216−1) for dynamic or private ports.
-ENDPOINT_IP = '127.0.0.1' 
+ENDPOINT_IP = '127.0.0.1' #The ip address for the Client server side
 BUFFER_SIZE = 1024 # The receive buffer
-MAX_NB_PEERS = 5
+MAX_NB_PEERS = 5 #The maximum number of queued request for the Client server side
 TMP_DIRECTORY = 'tmp' #The name of the temporary directory.
-MAX_QUEUED_REQUEST = 50 #Max number of threads downloading from peers
-UPDATE_FILE_LOCATION_FREQUENCY = 5 #Every 5s
-CHUNK_REGISTER_FREQUENCY = 1 #Every 1s, avoid spamming the main server with too many chunck register requests.
+MAX_QUEUED_REQUEST = 50 #Max number of threads downloading from peers.
+UPDATE_FILE_LOCATION_FREQUENCY = 3 #Every 3sec we update the file location with all the sources.
+CHUNK_REGISTER_FREQUENCY = 1 #Every 1sec, avoid spamming the main server with too many chunck register requests. We send a set of chunks to register.
 
 
 class Client:
     def __init__(self, shareFolder, targetIP = TARGET_IP, targetPort = TARGET_PORT, bufferSize = BUFFER_SIZE, endPointIP = ENDPOINT_IP, endPointPort = ENDPOINT_PORT):
         
-        #------------------ CLIENT TO MAIN-SERVER SIDE
+        #------------------ CLIENT TO MAIN-SERVER SIDE VARS
         self.filesAvailable = [] #List of files available [('filename1', hash(...), fileSize, nbChunks), ('filename2', hash(...), fileSize, nbChunks)...]
         self.targetIP = TARGET_IP #Main server
         self.targetPort = TARGET_PORT #Main server
         self.shareFolder = shareFolder # The name of the folder the client will share the file from.
+        if not exists(shareFolder):
+            print("Invalid folder name. Execution killed")
+            sys.exit()
+            
         self.clientSocket = None # Socket to communicate with the main server
         self.clientSocketLock = Lock() # Lock for the socket to communicate with the main server
         
@@ -58,13 +66,13 @@ class Client:
         self.chunkRegisterUpdateTime = None
         
         
-        #------------------------ SERVER TO PEER SIDE
+        #------------------------ SERVER TO PEER SIDE VARS
         self.endPointIP = endPointIP #End-point IP
         self.endPointPort = endPointPort #End-point port
         self.threads = {} #Dict of all server threads running
         self.serverSocket = None # Socket to communicate with the peers
         
-        #-------------------------- PEER TO SERVER SIDE
+        #-------------------------- PEER TO SERVER SIDE VARS
         self.downloadingFileSource = None #Which peer has what ?
         self.downloadingFileID = None #File metadata (filename, hash, size in B, chunkNb)
         self.downloadingFileSourceUpdateTime = None #Timestamp of the last time the FileSources has been updated (ask the Main server)
@@ -73,16 +81,16 @@ class Client:
         self.chunksDownloaded_ingLock = Lock() #Lock on the last 2 objects
         
         self.chunksSaveLock = Lock() #Lock to write the chunk on the disk
+        self.saveFileLock = Lock() #Lock when the file is assembling, we don't want to send a chunk while assembling.
         
         self.downloadingThreads = {} #The threads for the downloading process
         self.peerConnected = {} #Dict of peers' (IP, Port) where the client is connected to. {(IP, Port): socket, (IP2, Port2): socket2}
         
         #-------------------------- GENERAL
         self.bufferSize = BUFFER_SIZE
-        self.saveFileLock = Lock()
         
         self.startServerSideThread = Thread(target=self.startServerSide, args=())
-        self.startClientSideThread = Thread(target=self.startClientSide, args=())
+        self.startClientSideThread = Thread(target=self.startClientSide, args=()) #The client side is in charge to close the server side S2P with a call to self.stopServerSide()
         self.startServerSideThread.start()
         self.startClientSideThread.start()
     
@@ -294,8 +302,6 @@ class Client:
             self.downloadingFileID = fileID
             self.downloadingFileSourceUpdateTime = time.time() #time in sec
             
-            #Sends an ACK
-            self.clientSocket.send("ACK".encode())
             self.clientSocketLock.release()
             if VERBOSE_C2MS: print("[C2MS] File location infos have been updated.")
             return 0
@@ -310,8 +316,8 @@ class Client:
         self.clientSocket.send("CHUNK_REGISTER".encode())
         
         #Receive an ACK
-        ack = self.clientSocket.recv(self.bufferSize).decode()
-        assert(ack == "ACK")
+        send = self.clientSocket.recv(self.bufferSize).decode()
+        assert(send == "SEND")
         
         #Send the chunksToBeRegistered set, the fileID and the endPointIP and endPointPort
         #Acquire the lock on the set
@@ -414,18 +420,14 @@ class Client:
         fileID, chunkID = pickle.loads(peerSocket.recv(self.bufferSize))
         
         #Find the chunk of data requested:
-        chunkData = ''
+        chunkData = b''
         try: 
             self.saveFileLock.acquire()
             pathToF = self.shareFolder+'/'+fileID[0]
             if exists(pathToF): #The file has already been reconstructed
-                chunkNb = 0
                 with open(pathToF, 'rb') as f:
-                    while True:
-                        chunkData = f.read(self.bufferSize) #Read self.bufferSize bytes by self.bufferSize bytes
-                        if not chunkData or chunkNb == chunkID:
-                            break
-                        chunkNb += 1
+                    f.seek(self.bufferSize*chunkID) #Go to self.bufferSize*chunkID from the beginning of the file.
+                    chunkData = f.read(self.bufferSize)#Read self.bufferSize bytes.
             else:
                 pathToF = self.shareFolder+'/'+TMP_DIRECTORY+'/'+str(chunkID)+'.chunk'
                 with open(pathToF, 'rb') as f:
@@ -538,6 +540,7 @@ class Client:
             peerSocket.close()
             
         self.saveFile()
+        self.chunkRegisterRequest() #Tell the MS we have all the chunks
         
         self.downloadingFileSource = None # The seeders data {('127.0.0.1', 63248): set([chunkNb]), ('127.0.0.1', 63249):...}
         self.downloadingFileID = None 
@@ -712,6 +715,8 @@ class Client:
         
         
 if __name__ == "__main__":
-    shareFolder = sys.argv[1]
-    
+    try:
+        shareFolder = sys.argv[1]
+    except:
+        print("Invalid comand line argument, please specify the path to the folder where the file you want to share are.")
     C = Client(shareFolder)
