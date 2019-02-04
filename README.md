@@ -1,6 +1,7 @@
 # Project 1 - CSE 514
 
 P2P client/server code.
+See instructions.pdf for more informations about the project.
 
 ## server.py
 The server base code, serving the peer.
