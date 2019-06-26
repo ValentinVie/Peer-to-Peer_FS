@@ -3,6 +3,7 @@
 ## Introduction
 In this project, I design and implement a simple peer-to-peer (P2P) file sharing system using TCP/IP. The goal is to gain experience on implementing a centralized P2P network.
 
+See `instructions.pdf` for complete information about the project.
 
 ## Protocol
 Here are the key component of our P2P protocol:
@@ -35,6 +36,7 @@ Here peers #3 and #2 download `climbing.jpg`from peer #1 (simultaneously). Then 
 </p>
 
 ## Usage
+
 1. `server.py` : The server (tracker) base code, serving the peer.
 Gives all the files availlable, the peers availlable and also return which pieces are the rarest.
 
