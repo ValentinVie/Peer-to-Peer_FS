@@ -13,7 +13,7 @@ Here are the key component of our P2P protocol:
 | **Register Request:** Tells the server what files the peer wants to share with the network. Takes in the IP address and port for the end- point to accept peer connections for download; the number of files to register; and for every file, a file name (string) and its length. | **Register Reply:** For each file, it advises if the file registration was a success (Boolean). |
 | **File List Request:** Asks the server for the list of files. | **File List Reply:** Includes the number of files in the list; and for each file, a file name (string) and a file length. |
 | **File Locations Request:** Asks the server for the IP endpoints of the peers containing the requested file (string). | **File Locations Reply:** Includes number of endpoints; then for each endpoint, chunks of the file it has, an IP address and port. |
-| **Chunk Register Request:** Tells the server when a peer receives a new chunk of the file and becomes a source (of that chunk) for other peers. | Chunk Register Reply: Advises if the chunk registration was a success (Boolean). |
+| **Chunk Register Request:** Tells the server when a peer receives a new chunk of the file and becomes a source (of that chunk) for other peers. | **Chunk Register Reply:** Advises if the chunk registration was a success (Boolean). |
 | **Leave Request:** Tells the server remove this peer and all its files (chunks) from the network. | **Leave Reply:** Ad- vises if the peer was removed successfully (Boolean). |
 
 To learn more about the protocol, check `lab1_report.pdf`
